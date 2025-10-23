@@ -1,0 +1,35 @@
+# Core Framework
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+
+# Database
+pymongo==4.6.0
+
+# AI & NLP
+openai==1.3.7
+langchain==0.1.0
+langchain-openai==0.0.2
+sentence-transformers==2.2.2
+langdetect==1.0.9
+
+# Data Processing
+pandas==2.1.3
+numpy==1.26.2
+openpyxl==3.1.2
+
+# PDF Processing
+PyPDF2==3.0.1
+pdfplumber==0.10.3
+
+# Validation
+pydantic==2.5.2
+
+# Visualization
+plotly==5.18.0
+
+# Environment
+python-dotenv==1.0.0
+
+# Streamlit (for frontend)
+streamlit==1.29.0

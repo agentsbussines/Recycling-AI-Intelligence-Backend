@@ -1,0 +1,66 @@
+# Python-specific ignores
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+.pip-egg-info/
+
+# Virtual environment
+venv/
+env/
+.venv/
+.env
+*.env
+env.bak/
+venv.bak/
+
+# FastAPI and server-related ignores
+*.log
+logs/
+*.pid
+*.sock
+*.sqlite
+*.sqlite3
+*.db
+
+# Dependency management
+Pipfile.lock
+poetry.lock
+
+# Testing and coverage
+.coverage
+coverage.*
+.tox/
+.pytest_cache/
+htmlcov/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Miscellaneous
+*.bak
+*.swp
+*~
+*.tmp
+temp/
+
+# Sensitive files
+secrets/
+credentials.json
+*.key
+*.pem
+*.crt
+*.cert
