@@ -47,8 +47,7 @@ except ImportError:
 # =============================================================================
 
 class Config:
-    MONGODB_URI = "mongodb+srv://agentsbussines:Pakistan21@cluster0.ddj675b.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-    DB_NAME = "InventoryAgentDB"
+    MONGODB_URI = os.getenv("MONGODB_URI")
     COLLECTION_EMBEDDINGS = "embeddings"
     COLLECTION_INVENTORY = "inventory_records"
     COLLECTION_METADATA = "file_metadata"
@@ -56,7 +55,7 @@ class Config:
     COLLECTION_LEARNED_PATTERNS = "learned_patterns"
     DATA_FOLDER = "./Data"
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     LLM_MODEL = "gpt-4o-mini"
     CHUNK_SIZE = 1000
     CHUNK_OVERLAP = 150
