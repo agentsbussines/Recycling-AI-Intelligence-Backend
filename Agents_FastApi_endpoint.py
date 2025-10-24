@@ -668,12 +668,17 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     from dotenv import load_dotenv
+    import time
+
     load_dotenv()
 
-    port = int(os.getenv("PORT", "3000"))
+    port = int(os.getenv("PORT", "8000"))  # Default to 8000 for Render
     logger.info(f"Starting Uvicorn on 0.0.0.0:{port}")
+    start_time = time.time()
     try:
-        uvicorn.run("Agents_FastApi_endpoint:app", host="0.0.0.0", port=port, log_level="info")
+        uvicorn.run("Agents_FastApi_endpoint:app", host="0.0.0.0", port=port, log_level="info", workers=1)
     except Exception as e:
         logger.error(f"Failed to start Uvicorn: {str(e)}")
         raise
+    finally:
+        logger.info(f"Uvicorn startup took {time.time() - start_time:.2f} seconds")
