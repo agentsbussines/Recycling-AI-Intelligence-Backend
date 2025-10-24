@@ -2,12 +2,18 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
+from contextlib import asynccontextmanager
 import sys
 import os
 from dotenv import load_dotenv
 import uuid
 from datetime import datetime
 import threading
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -31,10 +37,80 @@ from Services.FinanceAgent import (
     RAGFinanceAgent
 )
 
+# Global variables for agents and initialization state
+inventory_db = None
+inventory_processor = None
+inventory_chatbot = None
+marketing_db = None
+marketing_chatbot = None
+finance_db = None
+finance_extractor = None
+finance_agent = None
+_agents_initialized = False
+_initialization_error = None
+_initialization_lock = threading.Lock()
+
+# Function to initialize agents in the background
+def initialize_agents():
+    global inventory_db, inventory_processor, inventory_chatbot
+    global marketing_db, marketing_chatbot
+    global finance_db, finance_extractor, finance_agent
+    global _agents_initialized, _initialization_error
+    
+    logger.info("Starting agent initialization in background...")
+    try:
+        # Initialize Inventory Agent
+        inventory_db = InventoryDatabaseManager(
+            uri=InventoryConfig.MONGODB_URI,
+            db_name=InventoryConfig.DB_NAME
+        )
+        inventory_processor = AutoFileProcessor(inventory_db)
+        inventory_chatbot = InventoryChatbot(inventory_db)
+        
+        # Initialize Marketing Agent
+        marketing_db = MarketingDatabaseManager()
+        marketing_chatbot = MarketingChatbot(marketing_db)
+        
+        # Initialize Finance Agent
+        finance_db = FinanceDatabaseManager(MarketingConfig.MONGODB_URI)
+        finance_extractor = ContentExtractionAgent(MarketingConfig.OPENAI_API_KEY)
+        finance_agent = RAGFinanceAgent(MarketingConfig.OPENAI_API_KEY, finance_db)
+        
+        with _initialization_lock:
+            _agents_initialized = True
+            _initialization_error = None
+        logger.info("✅ All agents initialized successfully")
+    except Exception as e:
+        with _initialization_lock:
+            _agents_initialized = False
+            _initialization_error = str(e)
+        logger.error(f"❌ Error initializing agents: {str(e)}")
+        raise
+
+# FastAPI lifespan event handler
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start agent initialization in a background task
+    background_tasks = BackgroundTasks()
+    background_tasks.add_task(initialize_agents)
+    
+    # Run background tasks manually to ensure they start
+    import asyncio
+    asyncio.create_task(background_tasks())
+    
+    logger.info("Application startup complete, agent initialization running in background")
+    yield
+    # Cleanup on shutdown
+    logger.info("Shutting down...")
+    with _initialization_lock:
+        global _agents_initialized
+        _agents_initialized = False
+
 app = FastAPI(
-    title="Multi-Agent System API", 
+    title="Multi-Agent System API",
     version="1.0.0",
-    timeout=300
+    timeout=300,
+    lifespan=lifespan
 )
 
 # CORS middleware
@@ -49,27 +125,6 @@ app.add_middleware(
 # Job tracking system
 job_status = {}
 job_lock = threading.Lock()
-
-# Initialize agents
-try:
-    inventory_db = InventoryDatabaseManager(
-        uri=InventoryConfig.MONGODB_URI,
-        db_name=InventoryConfig.DB_NAME
-    )
-    inventory_processor = AutoFileProcessor(inventory_db)
-    inventory_chatbot = InventoryChatbot(inventory_db)
-    
-    marketing_db = MarketingDatabaseManager()
-    marketing_chatbot = MarketingChatbot(marketing_db)
-    
-    finance_db = FinanceDatabaseManager(MarketingConfig.MONGODB_URI)
-    finance_extractor = ContentExtractionAgent(MarketingConfig.OPENAI_API_KEY)
-    finance_agent = RAGFinanceAgent(MarketingConfig.OPENAI_API_KEY, finance_db)
-    
-    print("✅ All agents initialized successfully")
-except Exception as e:
-    print(f"❌ Error initializing agents: {str(e)}")
-    raise
 
 # Request/Response models
 class ChatRequest(BaseModel):
@@ -183,6 +238,18 @@ def process_finance_background(job_id: str, file_bytes: bytes, filename: str):
     except Exception as e:
         fail_job(job_id, str(e))
 
+# Readiness endpoint
+@app.get("/ready")
+async def readiness_check():
+    """Check if all agents are initialized"""
+    with _initialization_lock:
+        if _agents_initialized:
+            return {"status": "ready", "message": "All agents initialized"}
+        elif _initialization_error:
+            raise HTTPException(status_code=503, detail=f"Agent initialization failed: {_initialization_error}")
+        else:
+            raise HTTPException(status_code=503, detail="Agents are still initializing")
+
 # Health check
 @app.get("/")
 async def root():
@@ -219,6 +286,11 @@ async def get_job_status(job_id: str):
 @app.post("/inventory/upload", response_model=JobResponse)
 async def upload_inventory_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """Upload PDF file for inventory processing - Returns job_id for tracking"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Inventory agent not initialized yet")
+        if inventory_processor is None:
+            raise HTTPException(status_code=503, detail="Inventory agent not initialized")
     try:
         if not file.filename.endswith('.pdf'):
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
@@ -247,6 +319,11 @@ async def upload_inventory_file(background_tasks: BackgroundTasks, file: UploadF
 @app.post("/inventory/chat", response_model=ChatResponse)
 async def inventory_chat(request: ChatRequest):
     """Chat with inventory agent"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Inventory agent not initialized yet")
+        if inventory_chatbot is None:
+            raise HTTPException(status_code=503, detail="Inventory agent not initialized")
     try:
         response = inventory_chatbot.chat(request.message)
         return ChatResponse(response=response, agent="inventory")
@@ -256,6 +333,11 @@ async def inventory_chat(request: ChatRequest):
 @app.get("/inventory/stats")
 async def get_inventory_stats():
     """Get inventory statistics"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Inventory agent not initialized yet")
+        if inventory_db is None:
+            raise HTTPException(status_code=503, detail="Inventory database not initialized")
     try:
         summary = inventory_db.get_inventory_summary(days=90)
         return summary
@@ -269,6 +351,11 @@ async def get_inventory_stats():
 @app.post("/marketing/upload")
 async def upload_marketing_file(file: UploadFile = File(...)):
     """Upload Facebook Ads file (CSV/Excel) - Fast processing"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Marketing agent not initialized yet")
+        if marketing_db is None:
+            raise HTTPException(status_code=503, detail="Marketing database not initialized")
     try:
         if not (file.filename.endswith('.csv') or 
                 file.filename.endswith('.xlsx') or 
@@ -294,6 +381,11 @@ async def upload_marketing_file(file: UploadFile = File(...)):
 @app.post("/marketing/chat", response_model=ChatResponse)
 async def marketing_chat(request: ChatRequest):
     """Chat with marketing agent"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Marketing agent not initialized yet")
+        if marketing_chatbot is None:
+            raise HTTPException(status_code=503, detail="Marketing agent not initialized")
     try:
         response, chart_data = marketing_chatbot.chat(request.message)
         return ChatResponse(response=response, agent="marketing")
@@ -303,6 +395,11 @@ async def marketing_chat(request: ChatRequest):
 @app.get("/marketing/stats")
 async def get_marketing_stats():
     """Get marketing statistics"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Marketing agent not initialized yet")
+        if marketing_db is None:
+            raise HTTPException(status_code=503, detail="Marketing database not initialized")
     try:
         fb_ads = marketing_db.get_facebook_ads()
         inventory = marketing_db.get_inventory_data(days=90)
@@ -335,6 +432,11 @@ async def get_marketing_stats():
 @app.post("/finance/upload", response_model=JobResponse)
 async def upload_finance_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """Upload financial document image - Returns job_id immediately"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Finance agent not initialized yet")
+        if finance_extractor is None or finance_db is None:
+            raise HTTPException(status_code=503, detail="Finance agent not initialized")
     try:
         if not (file.filename.lower().endswith('.jpg') or 
                 file.filename.lower().endswith('.jpeg') or 
@@ -370,6 +472,11 @@ async def upload_finance_file(background_tasks: BackgroundTasks, file: UploadFil
 @app.post("/finance/chat", response_model=ChatResponse)
 async def finance_chat(request: ChatRequest):
     """Chat with finance agent"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Finance agent not initialized yet")
+        if finance_agent is None:
+            raise HTTPException(status_code=503, detail="Finance agent not initialized")
     try:
         response = finance_agent.query(request.message)
         return ChatResponse(response=response, agent="finance")
@@ -379,6 +486,11 @@ async def finance_chat(request: ChatRequest):
 @app.get("/finance/stats")
 async def get_finance_stats():
     """Get finance statistics"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Finance agent not initialized yet")
+        if finance_db is None:
+            raise HTTPException(status_code=503, detail="Finance database not initialized")
     try:
         all_docs = finance_db.get_all_documents()
         
@@ -407,6 +519,11 @@ async def get_finance_stats():
 @app.get("/finance/documents")
 async def get_finance_documents():
     """Get all finance documents"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Finance agent not initialized yet")
+        if finance_db is None:
+            raise HTTPException(status_code=503, detail="Finance database not initialized")
     try:
         all_docs = finance_db.get_all_documents()
         return all_docs
@@ -420,12 +537,21 @@ async def get_finance_documents():
 @app.post("/chat", response_model=ChatResponse)
 async def unified_chat(request: ChatRequest):
     """Unified chat endpoint that routes to the correct agent"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail=f"{request.agent} agent not initialized yet")
     try:
         if request.agent == "inventory":
+            if inventory_chatbot is None:
+                raise HTTPException(status_code=503, detail="Inventory agent not initialized")
             response = inventory_chatbot.chat(request.message)
         elif request.agent == "marketing":
+            if marketing_chatbot is None:
+                raise HTTPException(status_code=503, detail="Marketing agent not initialized")
             response, _ = marketing_chatbot.chat(request.message)
         elif request.agent == "finance":
+            if finance_agent is None:
+                raise HTTPException(status_code=503, detail="Finance agent not initialized")
             response = finance_agent.query(request.message)
         else:
             raise HTTPException(
@@ -442,6 +568,11 @@ async def unified_chat(request: ChatRequest):
 @app.get("/stats", response_model=StatsResponse)
 async def get_all_stats():
     """Get statistics from all agents"""
+    with _initialization_lock:
+        if not _agents_initialized:
+            raise HTTPException(status_code=503, detail="Agents not initialized yet")
+        if any(x is None for x in [inventory_db, marketing_db, finance_db]):
+            raise HTTPException(status_code=503, detail="One or more agents not initialized")
     try:
         inventory_stats = inventory_db.get_inventory_summary(days=90)
         
@@ -495,7 +626,19 @@ async def health_check():
         "agents": {}
     }
     
+    with _initialization_lock:
+        if not _agents_initialized:
+            health["status"] = "degraded"
+            health["agents"]["inventory"] = "unhealthy: not initialized yet"
+            health["agents"]["marketing"] = "unhealthy: not initialized yet"
+            health["agents"]["finance"] = "unhealthy: not initialized yet"
+            if _initialization_error:
+                health["error"] = f"Initialization failed: {_initialization_error}"
+            return health
+    
     try:
+        if inventory_db is None:
+            raise Exception("Inventory database not initialized")
         inventory_db.get_inventory_summary(days=1)
         health["agents"]["inventory"] = "healthy"
     except Exception as e:
@@ -503,6 +646,8 @@ async def health_check():
         health["status"] = "degraded"
     
     try:
+        if marketing_db is None:
+            raise Exception("Marketing database not initialized")
         marketing_db.get_facebook_ads()
         health["agents"]["marketing"] = "healthy"
     except Exception as e:
@@ -510,6 +655,8 @@ async def health_check():
         health["status"] = "degraded"
     
     try:
+        if finance_db is None:
+            raise Exception("Finance database not initialized")
         finance_db.get_all_documents()
         health["agents"]["finance"] = "healthy"
     except Exception as e:
@@ -523,5 +670,10 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv()
 
-    port = int(os.getenv("PORT"))
-    uvicorn.run("Agents_FastApi_endpoint:app", host="0.0.0.0", port=port)
+    port = int(os.getenv("PORT", "3000"))
+    logger.info(f"Starting Uvicorn on 0.0.0.0:{port}")
+    try:
+        uvicorn.run("Agents_FastApi_endpoint:app", host="0.0.0.0", port=port, log_level="info")
+    except Exception as e:
+        logger.error(f"Failed to start Uvicorn: {str(e)}")
+        raise
