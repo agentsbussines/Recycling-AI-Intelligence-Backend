@@ -520,4 +520,8 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    port = int(os.getenv("PORT"))
+    uvicorn.run("Agents_FastApi_endpoint:app", host="0.0.0.0", port=port)
