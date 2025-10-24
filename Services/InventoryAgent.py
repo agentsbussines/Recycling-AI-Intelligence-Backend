@@ -59,6 +59,7 @@ class Config:
     LLM_MODEL = "gpt-4o-mini"
     CHUNK_SIZE = 1000
     CHUNK_OVERLAP = 150
+    DB_NAME = "InventoryAgentDB"
 
 # =============================================================================
 # PYDANTIC MODELS FOR STRUCTURED OUTPUT
